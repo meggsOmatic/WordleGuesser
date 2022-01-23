@@ -1,6 +1,8 @@
 mod scrabble_word_list;
 mod word_frequency_list;
 mod wordle_solutions;
+use clap::Parser;
+use itertools::Itertools;
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::*;
@@ -166,7 +168,7 @@ fn score_word_pair_simple(guess: &str, target: &str) -> WordScore {
 // Calculate the score for a given guess against a given target. Note that this is NOT symmetric.
 // i.e.  score_word_pair("caddy", "abbey") != score_word_pair("abbey", "caddy")
 //
-// This version is hand-unrolled and uses unsafe pointers, which combine to make is about 75%
+// This version is hand-unrolled and uses unsafe pointers, which combine to make it about 75%
 // faster than the score_word_simple above. It should always generate the same output for
 // the same inputs, though.
 fn score_word_pair(guess: &str, target: &str) -> WordScore {
@@ -465,9 +467,30 @@ fn generate_and_print_suggestions(guesses: &[&str], targets: &[&str]) {
     print_suggested_guess_list(&all_guesses_scored, targets);
 }
 
+#[derive(Parser)]
+#[clap(version, long_about = "This is a small console program (primarily) for me to learn Rust, and (secondarily) to suggest good words for the web-based word-guessing game Wordle at https://www.powerlanguage.co.uk/wordle/\n\nSee documentation and example usage at https://github.com/meggsOmatic/WordleGuesser")]
+struct CmdArgs {
+    /// Hard Mode: If you play Wordle with this turned on from its settings,
+    /// then once you correctly guess a letter, Wordle will require that you use it in all later guesses.
+    #[clap(short, long)]
+    hard: bool,
+
+    /// Normally, the 5000 most-common 5-letter English words are used as the starting point
+    /// for your guesses. You can increase the size of that list to get some less-common words, or increase
+    /// it to to only use the most common.
+    #[clap(short, long, conflicts_with="solutions")]
+    common: Option<u32>,
+
+    /// Use the Wordle solution list. Normally, wordle_solver will come up with guesses that narrow down
+    /// a list of the most common 5-letter English words. If you specify this option, it will instead use
+    /// Wordle's actual set of solution words as the starting point. Guesses will be more accurate, but
+    /// doesn't this feel like cheating to you?
+    #[clap(short, long)]
+    solutions: bool,
+}
+
 fn main() {
-    let hard_mode = true;
-    let use_wordle_solutions = true;
+    let cmd_args = CmdArgs::parse();
 
     // These are the words that Wordle considers valid guesses. It appears to be based on a
     // Scrabble word list. While nearly all of these are in my dictionary, some are so obscure,
@@ -487,8 +510,17 @@ fn main() {
     // as a list of valid words that are in common enough usage that they could reasonably
     // be chosen as the target word. With each guess, we'll cull the list of things that
     // don't match the score for that guess.
-    let mut remaining_targets: Vec<&str> = if use_wordle_solutions {
-        Vec::from(wordle_solutions::WORDLE_SOLUTION_LIST)
+    let mut remaining_targets: Vec<&str> = if cmd_args.solutions {
+        let frequency_hash: HashMap<&str, u32> = word_frequency_list::WORD_FREQUENCY_LIST
+            .into_iter()
+            .copied()
+            .collect();
+        wordle_solutions::WORDLE_SOLUTION_LIST
+            .iter()
+            .map(|w| (u32::MAX - frequency_hash.get(w).copied().unwrap_or_default(), *w))
+            .sorted()
+            .map(|(_freq, word)| word)
+            .collect::<Vec<&str>>()
     } else {
         // The word frequency list is based on an analysis of in-the-wild English texts, so it
         // includes acronyms, proper names, common typos and misspellings, perhaps OCR errors,
@@ -514,7 +546,7 @@ fn main() {
                     None
                 }
             })
-            .take(5000)
+            .take(cmd_args.common.unwrap_or(5000) as usize)
             .collect()
     };
 
@@ -610,7 +642,7 @@ fn main() {
         remaining_targets.retain(|w| score_word_pair(&guess, w) == score);
 
         // If we're in hard mode, cull the list of valid guesses as well.
-        if hard_mode {
+        if cmd_args.hard {
             valid_guesses.retain(|w| score_word_pair(&guess, w) == score);
         }
     }
