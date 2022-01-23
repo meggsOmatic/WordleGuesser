@@ -92,7 +92,12 @@ fn parse_score(readable: &str) -> Option<WordScore> {
 
 // Calculate the score for a given guess against a given target. Note that this is NOT symmetric.
 // i.e.  score_word_pair("caddy", "abbey") != score_word_pair("abbey", "caddy")
-fn score_word_pair(guess: &str, target: &str) -> WordScore {
+//
+// Because this function consumes the majority of the runtime, it's been superseded by the
+// hand-optimized version below. Kept around for reference and to validate the correctness
+// of the optimized version.
+#[allow(dead_code)]
+fn score_word_pair_simple(guess: &str, target: &str) -> WordScore {
     // A bitfield for the letters of the guess and the target. We
     // mark these off as they're paired up.
     let mut guess_used = 0u32;
@@ -154,6 +159,169 @@ fn score_word_pair(guess: &str, target: &str) -> WordScore {
         }
         mult *= 3;
     }
+
+    result
+}
+
+// Calculate the score for a given guess against a given target. Note that this is NOT symmetric.
+// i.e.  score_word_pair("caddy", "abbey") != score_word_pair("abbey", "caddy")
+//
+// This version is hand-unrolled and uses unsafe pointers, which combine to make is about 75%
+// faster than the score_word_simple above. It should always generate the same output for
+// the same inputs, though.
+fn score_word_pair(guess: &str, target: &str) -> WordScore {
+    if WORD_LENGTH != 5 {
+        panic!(
+            "WORD_LENGTH is {} but score_word_pair was hand-optimized for 5",
+            WORD_LENGTH
+        );
+    }
+
+    if guess.len() != WORD_LENGTH {
+        panic!("guess '{}' is not exactly length {}", guess, WORD_LENGTH);
+    }
+
+    if target.len() != WORD_LENGTH {
+        panic!("target '{}' is not exactly length {}", guess, WORD_LENGTH);
+    }
+
+    // The result. Starts at 0 for no matches; as we find matches
+    // we'll add values in.
+    let mut result: WordScore = 0;
+
+    unsafe {
+        // A bitfield for the letters of the guess and the target. We
+        // mark these off as they're paired up.
+        let mut guess_used = 0u32;
+
+        // Reasonable to use bytes and pointers here. We're playing a game about
+        // guessing English words, and the speed of this function is
+        // the main limit in performance.
+        let guess = guess.as_ptr();
+        let target = target.as_ptr();
+
+        // Match up all of the "right letter in right place" pairs FIRST,
+        // and mark them off as so they won't be checked later. If we're
+        // matching "cheer" against "abbey" we want to have the SECOND 'e'
+        // in "cheEr" be scored as a right-letter-right-place match, and
+        // do NOT want the FIRST 'e' to be scored as a right-letter-wrong-place
+        // match.
+        //
+        // When we find a match, add a 2 in the corresponding place in
+        // the score.
+        if *guess == *target {
+            result += 2;
+            guess_used |= 1;
+        }
+
+        if *guess.add(1) == *target.add(1) {
+            result += 6;
+            guess_used |= 2;
+        }
+
+        if *guess.add(2) == *target.add(2) {
+            result += 18;
+            guess_used |= 4;
+        }
+
+        if *guess.add(3) == *target.add(3) {
+            result += 54;
+            guess_used |= 8;
+        }
+
+        if *guess.add(4) == *target.add(4) {
+            result += 162;
+            guess_used |= 16;
+        }
+
+        // Now match the remaining letters, searching for other places.
+        // Here we have to consider 5*4 pairings.
+        //
+        // When we find a match, add a 1 in the corresponding place in
+        // the score.
+        let mut target_used = guess_used;
+
+        if (guess_used & 1) == 0 {
+            let g = *guess.add(0);
+            if *target.add(1) == g && (target_used & 2) == 0 {
+                target_used |= 2;
+                result += 1;
+            } else if *target.add(2) == g && (target_used & 4) == 0 {
+                target_used |= 4;
+                result += 1;
+            } else if *target.add(3) == g && (target_used & 8) == 0 {
+                target_used |= 8;
+                result += 1;
+            } else if *target.add(4) == g && (target_used & 16) == 0 {
+                target_used |= 16;
+                result += 1;
+            }
+        }
+
+        if (guess_used & 2) == 0 {
+            let g = *guess.add(1);
+            if *target.add(0) == g && (target_used & 1) == 0 {
+                target_used |= 1;
+                result += 3;
+            } else if *target.add(2) == g && (target_used & 4) == 0 {
+                target_used |= 4;
+                result += 3;
+            } else if *target.add(3) == g && (target_used & 8) == 0 {
+                target_used |= 8;
+                result += 3;
+            } else if *target.add(4) == g && (target_used & 16) == 0 {
+                target_used |= 16;
+                result += 3;
+            }
+        }
+
+        if (guess_used & 4) == 0 {
+            let g = *guess.add(2);
+            if *target.add(0) == g && (target_used & 1) == 0 {
+                target_used |= 1;
+                result += 9;
+            } else if *target.add(1) == g && (target_used & 2) == 0 {
+                target_used |= 2;
+                result += 9;
+            } else if *target.add(3) == g && (target_used & 8) == 0 {
+                target_used |= 8;
+                result += 9;
+            } else if *target.add(4) == g && (target_used & 16) == 0 {
+                target_used |= 16;
+                result += 9;
+            }
+        }
+
+        if (guess_used & 8) == 0 {
+            let g = *guess.add(3);
+            if *target.add(0) == g && (target_used & 1) == 0 {
+                target_used |= 1;
+                result += 27;
+            } else if *target.add(1) == g && (target_used & 2) == 0 {
+                target_used |= 2;
+                result += 27;
+            } else if *target.add(2) == g && (target_used & 4) == 0 {
+                target_used |= 4;
+                result += 27;
+            } else if *target.add(4) == g && (target_used & 16) == 0 {
+                target_used |= 16;
+                result += 27;
+            }
+        }
+
+        if (guess_used & 16) == 0 {
+            let g = *guess.add(4);
+            if (*target.add(0) == g && (target_used & 1) == 0)
+                || (*target.add(1) == g && (target_used & 2) == 0)
+                || (*target.add(2) == g && (target_used & 4) == 0)
+                || (*target.add(3) == g && (target_used & 8) == 0)
+            {
+                result += 81;
+            }
+        }
+    }
+
+    debug_assert_eq!(score_word_pair_simple(guess, target), result, "Optimized version of score_word_pair generated a different score from the simple version. guess='{}' target='{}'", guess, target);
 
     result
 }
