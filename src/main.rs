@@ -1,5 +1,6 @@
-mod wordlist;
-use colored::Colorize;
+mod scrabble_word_list;
+mod word_frequency_list;
+mod wordle_solutions;
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::*;
@@ -42,14 +43,13 @@ const WORD_LENGTH: usize = 5;
 // the possible scores for a single guess against a list of possible solutions, and then
 // rank the guesses based on which one does the best at narrowing the list of possible solutions.
 
-const NUM_SCORES: usize = 243; // This is 3^WORD_LENGTH
+const NUM_SCORES: usize = 243; // This is pow(3, WORD_LENGTH). Any good way to make that compile-time?
 type WordScore = u8;
 
 // Readable scores are in a format like ".y.GG", where:
 //   . = letter not found
 //   y = (yellow) letter in wrong place
 //   G = (green) letter in right place
-
 
 // Turn a numeric score into something readable. 165 => .y..G
 fn format_score(mut score: WordScore) -> String {
@@ -67,7 +67,6 @@ fn format_score(mut score: WordScore) -> String {
 
     result
 }
-
 
 // Try to turn a readable string back into a numeric score. .y..G => 165
 fn parse_score(readable: &str) -> Option<WordScore> {
@@ -90,7 +89,6 @@ fn parse_score(readable: &str) -> Option<WordScore> {
     }
     Some(result)
 }
-
 
 // Calculate the score for a given guess against a given target. Note that this is NOT symmetric.
 // i.e.  score_word_pair("caddy", "abbey") != score_word_pair("abbey", "caddy")
@@ -122,7 +120,7 @@ fn score_word_pair(guess: &str, target: &str) -> WordScore {
     let mut mult: WordScore = 1;
     for i in 0..WORD_LENGTH {
         if guess[i] == target[i] {
-            result = result + (2 * mult);
+            result += 2 * mult;
             guess_used |= 1 << i;
             target_used |= 1 << i;
         }
@@ -160,7 +158,6 @@ fn score_word_pair(guess: &str, target: &str) -> WordScore {
     result
 }
 
-
 // While WordScore represents how a guessed word compares to a single target word,
 // GuessQuality represents how a guessed word compares against an entire list of
 // possible targets.
@@ -175,7 +172,6 @@ struct GuessQuality<'a> {
     score_with_max_remaining: u8,
     guess: &'a str,
 }
-
 
 // Score a single candidate guess word against the list of remaining words.
 fn estimate_guess_quality<'a>(guess: &'a str, targets: &[&str]) -> GuessQuality<'a> {
@@ -205,7 +201,6 @@ fn estimate_guess_quality<'a>(guess: &'a str, targets: &[&str]) -> GuessQuality<
         guess: guess,
     }
 }
-
 
 // Print a presorted GuessQuality list in a way that's user-friendly.
 fn print_suggested_guess_list(list: &Vec<GuessQuality>, targets: &[&str]) {
@@ -259,7 +254,6 @@ fn print_suggested_guess_list(list: &Vec<GuessQuality>, targets: &[&str]) {
     }
 }
 
-
 // The core routine. Check the quality of various guesses against the full set
 // of targets, sort the qualities in a useful way, and print them out.
 fn generate_and_print_suggestions(guesses: &[&str], targets: &[&str]) {
@@ -303,9 +297,9 @@ fn generate_and_print_suggestions(guesses: &[&str], targets: &[&str]) {
     print_suggested_guess_list(&all_guesses_scored, targets);
 }
 
-
 fn main() {
     let hard_mode = true;
+    let use_wordle_solutions = true;
 
     // These are the words that Wordle considers valid guesses. It appears to be based on a
     // Scrabble word list. While nearly all of these are in my dictionary, some are so obscure,
@@ -319,13 +313,15 @@ fn main() {
     // can only guess words that fit with your previous guesses. For normal mode we'll leave
     // this entire list for consideration -- a word that won't win can sometimes be really
     // effective at narrowing the possibilities for the target word.
-    let mut valid_guesses: Vec<&str> = wordlist::SCRABBLE_WORD_LIST.to_vec();
+    let mut valid_guesses: Vec<&str> = scrabble_word_list::SCRABBLE_WORD_LIST.to_vec();
 
     // These are the words that are under consideration as possible solutions. It begins
     // as a list of valid words that are in common enough usage that they could reasonably
     // be chosen as the target word. With each guess, we'll cull the list of things that
     // don't match the score for that guess.
-    let mut remaining_targets: Vec<&str> = {
+    let mut remaining_targets: Vec<&str> = if use_wordle_solutions {
+        Vec::from(wordle_solutions::WORDLE_SOLUTION_LIST)
+    } else {
         // The word frequency list is based on an analysis of in-the-wild English texts, so it
         // includes acronyms, proper names, common typos and misspellings, perhaps OCR errors,
         // etc. We filter it against the list of valid guesses to cull out things that Wordle
@@ -341,10 +337,8 @@ fn main() {
         // be chosen for a puzzle that the general public is expected to solve. A threshold of
         // 1/20000 as common as the most-common word gives us just under 6000 words, with the
         // the least-common being words like "yenta" and "cardy".
-        let minimum_frequency = wordlist::WORD_FREQUENCY_LIST[0].1 / 20000;
-        wordlist::WORD_FREQUENCY_LIST
+        word_frequency_list::WORD_FREQUENCY_LIST
             .iter()
-            .take_while(|(_word, freq)| *freq > minimum_frequency)
             .filter_map(|(word, _freq)| {
                 if valid_guesses_hash.contains(word) {
                     Some(*word)
@@ -352,6 +346,7 @@ fn main() {
                     None
                 }
             })
+            .take(5000)
             .collect()
     };
 
@@ -444,11 +439,11 @@ fn main() {
         };
 
         // Cull the solution space to things that would give the above score for the above guess.
-        remaining_targets.retain(|w| score_word_pair(&guess[..], w) == score);
+        remaining_targets.retain(|w| score_word_pair(&guess, w) == score);
 
         // If we're in hard mode, cull the list of valid guesses as well.
         if hard_mode {
-            valid_guesses.retain(|w| score_word_pair(&guess[..], w) == score);
+            valid_guesses.retain(|w| score_word_pair(&guess, w) == score);
         }
     }
 }
